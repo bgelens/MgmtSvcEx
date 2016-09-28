@@ -30,31 +30,18 @@ CleanPSDefaultParameterValues
 
 #region internal functions
 function IgnoreSSL {
-    $Provider = New-Object -TypeName Microsoft.CSharp.CSharpCodeProvider
-    $null = $Provider.CreateCompiler()
-    $Params = New-Object -TypeName System.CodeDom.Compiler.CompilerParameters
-    $Params.GenerateExecutable = $False
-    $Params.GenerateInMemory = $True
-    $Params.IncludeDebugInformation = $False
-    $Params.ReferencedAssemblies.Add('System.DLL') > $null
-    $TASource=@'
-        namespace Local.ToolkitExtensions.Net.CertificatePolicy
-        {
-            public class TrustAll : System.Net.ICertificatePolicy
-            {
-                public TrustAll() {}
-                public bool CheckValidationResult(System.Net.ServicePoint sp,System.Security.Cryptography.X509Certificates.X509Certificate cert, System.Net.WebRequest req, int problem)
-                {
-                    return true;
-                }
-            }
-        }
-'@ 
-    $TAResults=$Provider.CompileAssemblyFromSource($Params,$TASource)
-    $TAAssembly=$TAResults.CompiledAssembly
-    ## We create an instance of TrustAll and attach it to the ServicePointManager
-    $TrustAll = $TAAssembly.CreateInstance('Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll')
-    [System.Net.ServicePointManager]::CertificatePolicy = $TrustAll
+    Add-Type -TypeDefinition @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCertsPolicy : ICertificatePolicy {
+    public bool CheckValidationResult(
+        ServicePoint srvPoint, X509Certificate certificate,
+        WebRequest request, int certificateProblem) {
+        return true;
+    }
+}
+"@
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object -TypeName TrustAllCertsPolicy
 }
 
 function TestJWTClaimNotExpired {
@@ -132,138 +119,126 @@ function ConvertToUIntTest {
         }
     }
 }
+
+
 #endregion internal functions
 
 #region public functions
+function Get-MgmtSvcExAPICertificate {
+    [CmdletBinding()]
+    param (
+
+    )
+    try {
+        
+        $request = [System.Net.WebRequest]::Create("$ApiUrl`:$Port")
+        $OriginalCertificatePolicy = [System.Net.ServicePointManager]::CertificatePolicy
+        Write-Warning -Message 'IgnoreSSL defined by Connect-WAPAPI, Certificate errors will be ignored!'
+        #Change Certificate Policy to ignore
+        IgnoreSSL
+        
+        $null = $request.GetResponse()
+        $servicePoint = $request.ServicePoint
+        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2](
+            $servicePoint.Certificate.Export(
+                [System.Security.Cryptography.X509Certificates.X509ContentType]::Cert
+            )
+        )
+        Write-Output -InputObject $certificate
+    } catch {
+        Write-Error -ErrorRecord $_ -ErrorAction Stop
+    } finally {
+        [System.Net.ServicePointManager]::CertificatePolicy = $OriginalCertificatePolicy
+    }
+}
+
+#proxy function of Get-MgmtSvcToken
 function Get-MgmtSvcExToken {
     <#
-    .SYNOPSIS
-        Retrieves a Bearer token from either ADFS or the WAP ASP.Net STS.
-
-    .PARAMETER Url
-        The URL of either the ADFS or WAP STS.
-
-    .PARAMETER Port
-        The Port on which ADFS or WAP STS is listening. Default for ADFS is 443, for WAP STS 30071.
-
-    .PARAMETER Credential
-        Credentials to acquire the bearer token.
-
-    .PARAMETER ADFS
-        When enabled the token will be requested from an ADFS STS. When disabled the WAP STS is assumed.
-
-    .PARAMETER IgnoreSSL
-        When using self-signed certificates, SSL validation will be ignored when this switch is enabled.
-
-    .EXAMPLE
-        PS C:\>$creds = Get-Credential
-        PS C:\>Get-WAPToken -Credential $creds -URL 'https://sts.adfs.com' -ADFS
-
-        This will get a bearer token from ADFS STS.
-
-    .EXAMPLE
-        PS C:\>$creds = Get-Credential
-        PS C:\>Get-MgmtSvcExToken -Credential $creds -URL 'https://sts.wap.com' -Port 443
-
-        This will return a bearer token from WAP STS using the non default port 443.
+    
+    .ForwardHelpTargetName MgmtSvcAdmin\Get-MgmtSvcToken
+    .ForwardHelpCategory Cmdlet
+    
     #>
     [CmdletBinding()]
-    [OutputType([void],[System.String])]
     param (
-        [Parameter(Mandatory)]
-        [ValidateNotNullOrEmpty()]
-        [string] $Url, 
-
-        [Parameter()]
-        [int] $Port,
-
-        [Parameter(Mandatory)]
-        [PSCredential]
-        [System.Management.Automation.Credential()] $Credential,
-
-        [Parameter()]
-        [Switch] $ADFS,
-
-        [Parameter()]
-        [Switch] $IgnoreSSL,
-
-        [Parameter()]
-        [Switch] $PassThru
-    )
-
-    try {
-        $ErrorActionPreference = 'Stop'
-
-        $ClientRealm = 'http://azureservices/AdminSite'
-        $MSPrincipalId = $Credential.UserName
-
-        if ($ADFS -and $Port -eq 0) {
-            $Port = 443
-        } elseif ($Port -eq 0) {
-            $Port = 30072
-        }
-
-        if ($ADFS) {
-            Write-Verbose -Message 'Constructing ADFS URL'
-            $ConstructedURL = $URL + ":$Port" + '/adfs/services/trust/13/usernamemixed'
-            $MessageClientCredentialType = 'UserName'
-            $TransportClientCredentialType = 'None'
-            $identityProviderEndpoint = New-Object -TypeName System.ServiceModel.EndpointAddress -ArgumentList $ConstructedURL
-            $identityProviderBinding = New-Object -TypeName System.ServiceModel.WS2007HttpBinding -ArgumentList ([System.ServiceModel.SecurityMode]::TransportWithMessageCredential)
-        } else {
-            $ConstructedURL = $URL + ":$Port" +  '/wstrust/issue/windowstransport'
-            $MessageClientCredentialType = 'None'
-            $TransportClientCredentialType = 'Windows'
-            $identityProviderEndpoint = New-Object -TypeName System.ServiceModel.EndpointAddress -ArgumentList $ConstructedURL
-            $identityProviderBinding = New-Object -TypeName System.ServiceModel.WS2007HttpBinding -ArgumentList ([System.ServiceModel.SecurityMode]::Transport)
-        }
-        Write-Verbose -Message $ConstructedURL
-        $identityProviderBinding.Security.Message.EstablishSecurityContext = $false
-        $identityProviderBinding.Security.Message.ClientCredentialType = $MessageClientCredentialType
-        $identityProviderBinding.Security.Transport.ClientCredentialType = $TransportClientCredentialType
-
-        $trustChannelFactory = New-Object -TypeName System.ServiceModel.Security.WSTrustChannelFactory -ArgumentList $identityProviderBinding, $identityProviderEndpoint
-        $trustChannelFactory.TrustVersion = [System.ServiceModel.Security.TrustVersion]::WSTrust13
-
-        if ($IgnoreSSL) {
-            Write-Warning -Message 'IgnoreSSL switch defined. Certificate errors will be ignored!'
-            $certificateAuthentication = New-Object -TypeName System.ServiceModel.Security.X509ServiceCertificateAuthentication
-            $certificateAuthentication.CertificateValidationMode = 'None'
-            $trustChannelFactory.Credentials.ServiceCertificate.SslCertificateAuthentication = $certificateAuthentication
-        }
-        if ($ADFS) {
-            $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToCoTaskMemUnicode($credential.Password)
-            $null = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr)
-            [System.Runtime.InteropServices.Marshal]::ZeroFreeCoTaskMemUnicode($ptr)
-        }
-        $trustChannelFactory.Credentials.SupportInteractive = $false
-        $trustChannelFactory.Credentials.UserName.UserName = $credential.UserName
-        $trustChannelFactory.Credentials.UserName.Password = $credential.GetNetworkCredential().Password
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipelineByPropertyName=$true)]
+        [Microsoft.WindowsAzure.Admin.PowerShell.TokenType]
+        ${Type},
     
-        $rst = New-Object -TypeName System.IdentityModel.Protocols.WSTrust.RequestSecurityToken -ArgumentList ([System.IdentityModel.Protocols.WSTrust.RequestTypes]::Issue)
-        $rst.AppliesTo = New-Object -TypeName System.IdentityModel.Protocols.WSTrust.EndpointReference -ArgumentList $clientRealm
-        $rst.TokenType = 'urn:ietf:params:oauth:token-type:jwt'
-        $rst.KeyType = [System.IdentityModel.Protocols.WSTrust.KeyTypes]::Bearer
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$true)]
+        [ValidateNotNull()]
+        [uri]
+        ${AuthenticationSite},
+    
+        [Parameter(ValueFromPipelineByPropertyName=$true)]
+        [ValidateNotNull()]
+        [pscredential]
+        ${User},
+    
+        [Parameter(ValueFromPipelineByPropertyName=$true)]
+        [ValidateNotNull()]
+        [uri]
+        ${AdfsAddress},
+    
+        [Parameter(ValueFromPipelineByPropertyName=$true)]
+        [ValidateNotNull()]
+        [uri]
+        ${AdfsRealm},
+    
+        [switch]
+        ${DisableCertificateValidation},
 
-        $rstr = New-Object -TypeName System.IdentityModel.Protocols.WSTrust.RequestSecurityTokenResponse
-
-        $channel = $trustChannelFactory.CreateChannel()
-        $token = $channel.Issue($rst, [ref] $rstr)
-
-        $tokenString = ([System.IdentityModel.Tokens.GenericXmlSecurityToken]$token).TokenXml.InnerText;
-        $token = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($tokenString))
-
-        Set-Variable -Name Headers -Scope 1 -Value @{
-            Authorization = "Bearer $Token"
-            'x-ms-principal-id' = $MSPrincipalId
-            Accept = 'application/json'
+        [switch]
+        ${PassThru}
+    )
+    begin {
+        try {
+            $outBuffer = $null
+            if ($PSBoundParameters.TryGetValue('OutBuffer', [ref]$outBuffer)) {
+                $PSBoundParameters['OutBuffer'] = 1
+            }
+            #tokens is only for dealing with Admin API. so hardcoding
+            [void]$PSBoundParameters.Add('ClientRealm','http://azureservices/AdminSite')
+            #PassThru is not original switch, removing from binding to avoid cmdlet error
+            [void]$PSBoundParameters.Remove('PassThru')
+            if ($null -eq $AdfsRealm -and $Type -eq [Microsoft.WindowsAzure.Admin.PowerShell.TokenType]::Adfs) {
+                #AdfsRealm is required by Get-MgmtSvcToken but not required for Adfs Type (wrong validation) so trying relaxed approach
+                [void] $PSBoundParameters.Add('AdfsRealm',$AdfsAddress)
+            }
+            $wrappedCmd = $ExecutionContext.InvokeCommand.GetCommand('MgmtSvcAdmin\Get-MgmtSvcToken', [System.Management.Automation.CommandTypes]::Cmdlet)
+            $scriptCmd = {
+                & $wrappedCmd @PSBoundParameters | %{
+                    if ($null -ne $_) {
+                        Set-Variable -Name Headers -Scope 1 -Value @{
+                            Authorization = "Bearer $_"
+                            'x-ms-principal-id' = $User.UserName
+                            Accept = 'application/json'
+                        }
+                        Set-Variable -Name Token -Value $_ -Scope 1
+                        if ($PassThru) {
+                            Write-Output -InputObject $_
+                        }
+                    }
+                }
+            }
+            $steppablePipeline = $scriptCmd.GetSteppablePipeline($myInvocation.CommandOrigin)
+            $steppablePipeline.Begin($PSCmdlet)
+        } catch {
+            throw
         }
-        Set-Variable -Name Token -Value $token -Scope 1
-        if ($PassThru) {
-            Write-Output -InputObject $token
+    } process {
+        try {
+            $steppablePipeline.Process($_)
+        } catch {
+            throw
         }
-    } catch {
-        Write-Error -ErrorRecord $_
+    } end {
+        try {
+            $steppablePipeline.End()
+        } catch {
+            throw
+        }
     }
 }
 
@@ -310,25 +285,25 @@ function Connect-MgmtSvcExAPI {
     )
     try {
         if ($IgnoreSSL) {
-            Write-Warning -Message 'IgnoreSSL switch defined. Certificate errors will be ignored!'
+            Write-Warning -Message 'IgnoreSSL switch defined. Certificate errors will be ignored througout this PowerShell session!'
             #Change Certificate Policy to ignore
             IgnoreSSL
         }
 
         PreFlight
 
-        $TestURL = '{0}:{1}/subscriptions/' -f $URL,$Port
+        $TestURL = '{0}:{1}/subscriptions/' -f $Url,$Port
         Write-Verbose -Message "Constructed Connection URL: $TestURL"
 
-        $Result = Invoke-WebRequest -Uri $TestURL -Headers $Headers -UseBasicParsing -ErrorVariable 'ErrCon'
+        $Result = Invoke-WebRequest -Uri $TestURL -Headers $script:Headers -UseBasicParsing -ErrorVariable 'ErrCon'
         if ($Result) {
             Write-Verbose -Message 'Successfully connected'
-            Set-Variable -Name APIUrl -Value $URL -Scope 1
+            Set-Variable -Name APIUrl -Value $Url -Scope 1
             Set-Variable -Name Port -Value $Port -Scope 1
             Set-Variable -Name IgnoreSSL -Value $IgnoreSSL -Scope 1
             CleanPSDefaultParameterValues
             [void] $global:PSDefaultParameterValues.Add("*-MgmtSvc*:AdminUri","$Url`:$Port")
-            [void] $global:PSDefaultParameterValues.Add("*-MgmtSvc*:Token",$Token)
+            [void] $global:PSDefaultParameterValues.Add("*-MgmtSvc*:Token",$script:Token)
             if ($IgnoreSSL) {
                 [void] $global:PSDefaultParameterValues.Add("*-MgmtSvc*:DisableCertificateValidation",$true)
             }
@@ -342,11 +317,6 @@ function Connect-MgmtSvcExAPI {
         }
     } catch {
         Write-Error -ErrorRecord $_
-    } finally {
-        #Change Certificate Policy to the original
-        if ($IgnoreSSL) {
-            [System.Net.ServicePointManager]::CertificatePolicy = $OriginalCertificatePolicy
-        }
     }
 }
 
@@ -360,12 +330,6 @@ function Get-MgmtSvcExCloud {
     )
     process {
         try {
-            if ($script:IgnoreSSL) {
-                Write-Warning -Message 'IgnoreSSL defined by Connect-WAPAPI, Certificate errors will be ignored!'
-                #Change Certificate Policy to ignore
-                IgnoreSSL
-            }
-
             PreFlight -IncludeConnection
             $URI = '{0}:{1}/services/systemcenter/SC2012R2/VMM/Microsoft.Management.Odata.svc/Clouds()' -f $script:APIUrl,$script:Port
             Write-Verbose -Message "Constructed Cloud URI: $URI"
@@ -380,11 +344,6 @@ function Get-MgmtSvcExCloud {
             }
         } catch {
             Write-Error -ErrorRecord $_
-        } finally {
-            #Change Certificate Policy to the original
-            if ($script:IgnoreSSL) {
-                [System.Net.ServicePointManager]::CertificatePolicy = $script:OriginalCertificatePolicy
-            }
         }
     }
 }
@@ -516,6 +475,7 @@ function New-MgmtSvcExQuotaSettingSCClouds {
             [void]$stringBuilder.Append("<Clouds>`r`n")
             [void]$stringBuilder.Append("    <Cloud Id=`"{0}`"" -f $Cloud.ID)
             [void]$stringBuilder.Append(" StampId=`"{0}`">`r`n" -f $Cloud.StampId)
+            [void]$stringBuilder.Append("        <Quota>`r`n")
 
             #set quotas
             [void]$stringBuilder.Append("            <RoleVMCount>{0}</RoleVMCount>`r`n" -f $VMCount)
@@ -529,8 +489,71 @@ function New-MgmtSvcExQuotaSettingSCClouds {
 
             #close html
             [void]$stringBuilder.Append("        </Quota>`r`n")
-            [void]$stringBuilder.Append("    <Cloud>`r`n")
+            [void]$stringBuilder.Append("    </Cloud>`r`n")
             [void]$stringBuilder.Append("</Clouds>")
+            $stringBuilder.ToString()
+        } catch {
+            Write-Error -ErrorRecord $_ -ErrorAction Stop
+        }
+    }
+}
+
+function New-MgmtSvcExQuotaSettingSCVmResources {
+    [CmdletBinding()]
+    param (
+
+    )
+    process {
+        #validate input
+        try {
+            $stringBuilder = New-Object -TypeName System.Text.StringBuilder
+            #open html
+            [void]$stringBuilder.Append("<Resources>`r`n")
+
+            #close html
+            [void]$stringBuilder.Append("</Resources>")
+            $stringBuilder.ToString()
+        } catch {
+            Write-Error -ErrorRecord $_ -ErrorAction Stop
+        }
+    }
+}
+
+function New-MgmtSvcExQuotaSettingSCNetworks {
+    [CmdletBinding()]
+    param (
+
+    )
+    process {
+        #validate input
+        try {
+            $stringBuilder = New-Object -TypeName System.Text.StringBuilder
+            #open html
+            [void]$stringBuilder.Append("<Networks>`r`n")
+
+            #close html
+            [void]$stringBuilder.Append("</Networks>")
+            $stringBuilder.ToString()
+        } catch {
+            Write-Error -ErrorRecord $_ -ErrorAction Stop
+        }
+    }
+}
+
+function New-MgmtSvcExQuotaSettingSCCustomSettings {
+    [CmdletBinding()]
+    param (
+
+    )
+    process {
+        #validate input
+        try {
+            $stringBuilder = New-Object -TypeName System.Text.StringBuilder
+            #open html
+            [void]$stringBuilder.Append("<CustomSettings>`r`n")
+
+            #close html
+            [void]$stringBuilder.Append("</CustomSettings>")
             $stringBuilder.ToString()
         } catch {
             Write-Error -ErrorRecord $_ -ErrorAction Stop

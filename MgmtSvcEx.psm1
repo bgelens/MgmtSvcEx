@@ -213,7 +213,7 @@ function Get-MgmtSvcExToken {
                         Set-Variable -Name Headers -Scope 1 -Value @{
                             Authorization = "Bearer $_"
                             'x-ms-principal-id' = $User.UserName
-                            Accept = 'application/json'
+                            Accept = 'application/json;odata=fullmetadata'
                         }
                         Set-Variable -Name Token -Value $_ -Scope 1
                         if ($PassThru) {
@@ -341,6 +341,105 @@ function Get-MgmtSvcExCloud {
                 }
                 $C.PSObject.TypeNames.Insert(0,'WAP.AdminCloud')
                 Write-Output -InputObject $C
+            }
+        } catch {
+            Write-Error -ErrorRecord $_
+        }
+    }
+}
+
+function Get-MgmtSvcExLogicalNetwork {
+    [OutputType([PSCustomObject])]
+    [CmdletBinding(DefaultParameterSetName='List')]
+    param (
+        [Parameter(Mandatory,ParameterSetName='Named')]
+        [ValidateNotNullOrEmpty()]
+        [System.String] $Name,
+
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [System.Management.Automation.PSTypeName('WAP.AdminCloud')]
+        [PSCustomObject] $Cloud
+    )
+    process {
+        try {
+            PreFlight -IncludeConnection
+            
+            $URI = '{0}:{1}/services/systemcenter/SC2012R2/VMM/Microsoft.Management.Odata.svc/{2}' -f $script:APIUrl,$script:Port,$Cloud.'LogicalNetworks@odata.navigationLinkUrl'
+            Write-Verbose -Message "Constructed LogicalNetwork URI: $URI"
+            $Networks = Invoke-RestMethod -Uri $URI -Headers $script:Headers -Method Get
+            foreach ($N in $Networks.Value) {
+                if ($PSCmdlet.ParameterSetName -eq 'Named' -and $N.Name -ne $Name) {
+                    continue
+                }
+                $N.PSObject.TypeNames.Insert(0,'WAP.AdminLogicalNetwork')
+                Write-Output -InputObject $N
+            }
+        } catch {
+            Write-Error -ErrorRecord $_
+        }
+    }
+}
+
+function Get-MgmtSvcExVMNetwork {
+    [OutputType([PSCustomObject])]
+    [CmdletBinding(DefaultParameterSetName='List')]
+    param (
+        [Parameter(Mandatory,ParameterSetName='Named')]
+        [ValidateNotNullOrEmpty()]
+        [System.String] $Name,
+
+        [Parameter(Mandatory,ValueFromPipeline)]
+        [System.Management.Automation.PSTypeName('WAP.AdminCloud')]
+        [PSCustomObject] $Cloud
+    )
+    process {
+        try {
+            PreFlight -IncludeConnection
+            $LogicalNetworks = $Cloud | Get-MgmtSvcExLogicalNetwork
+            $URI = '{0}:{1}/services/systemcenter/SC2012R2/VMM/Microsoft.Management.Odata.svc/VMNetworks()?$filter=StampId eq guid''{2}''' -f $script:APIUrl,$script:Port,$Cloud.StampId
+            Write-Verbose -Message "Constructed VMNetworks URI: $URI"
+
+            $Networks = Invoke-RestMethod -Uri $URI -Headers $script:Headers -Method Get
+            foreach ($N in $Networks.Value) {
+                if ($LogicalNetworks.ID -notcontains $N.LogicalNetworkId) {
+                    continue
+                }
+                if ($PSCmdlet.ParameterSetName -eq 'Named' -and $N.Name -ne $Name) {
+                    continue
+                }
+                $N.PSObject.TypeNames.Insert(0,'WAP.AdminVMNetwork')
+                Write-Output -InputObject $N
+            }
+        } catch {
+            Write-Error -ErrorRecord $_
+        }
+    }
+}
+
+function Get-MgmtSvcExVMTemplate {
+    [OutputType([PSCustomObject])]
+    [CmdletBinding(DefaultParameterSetName='List')]
+    param (
+        [Parameter(Mandatory,ParameterSetName='Named')]
+        [ValidateNotNullOrEmpty()]
+        [System.String] $Name
+    )
+    process {
+        try {
+            PreFlight -IncludeConnection
+            $URI = '{0}:{1}/services/systemcenter/SC2012R2/VMM/Microsoft.Management.Odata.svc/VMTemplates()' -f $script:APIUrl,$script:Port
+            Write-Verbose -Message "Constructed VMTemplates URI: $URI"
+
+            $Templates = Invoke-RestMethod -Uri $URI -Headers $script:Headers -Method Get
+            foreach ($T in $Templates.Value) {
+                if ($PSCmdlet.ParameterSetName -eq 'Named' -and $T.Name -ne $Name) {
+                    continue
+                }
+                if ($T.OSType -eq 'Other') {
+                    continue
+                }
+                $T.PSObject.TypeNames.Insert(0,'WAP.AdminVMTemplate')
+                Write-Output -InputObject $T
             }
         } catch {
             Write-Error -ErrorRecord $_
@@ -522,7 +621,9 @@ function New-MgmtSvcExQuotaSettingSCVmResources {
 function New-MgmtSvcExQuotaSettingSCNetworks {
     [CmdletBinding()]
     param (
-
+        [Parameter()]
+        [System.Management.Automation.PSTypeName('WAP.AdminVMNetwork')]
+        [PSCustomObject[]] $Network
     )
     process {
         #validate input
@@ -530,6 +631,11 @@ function New-MgmtSvcExQuotaSettingSCNetworks {
             $stringBuilder = New-Object -TypeName System.Text.StringBuilder
             #open html
             [void]$stringBuilder.Append("<Networks>`r`n")
+
+            foreach ($N in $Network) {
+                [void]$stringBuilder.Append("    <Network Id=`"{0}`"" -f $N.ID)
+                [void]$stringBuilder.Append(" StampId=`"{0}`" />`r`n" -f $N.StampId)
+            }
 
             #close html
             [void]$stringBuilder.Append("</Networks>")
@@ -543,7 +649,7 @@ function New-MgmtSvcExQuotaSettingSCNetworks {
 function New-MgmtSvcExQuotaSettingSCCustomSettings {
     [CmdletBinding()]
     param (
-
+        [Switch] $DisableNetworkExtension
     )
     process {
         #validate input
@@ -551,6 +657,11 @@ function New-MgmtSvcExQuotaSettingSCCustomSettings {
             $stringBuilder = New-Object -TypeName System.Text.StringBuilder
             #open html
             [void]$stringBuilder.Append("<CustomSettings>`r`n")
+
+            if ($DisableNetworkExtension) {
+                [void]$stringBuilder.Append("    <CustomSetting Key=`"{0}`"" -f [system.guid]::NewGuid().ToString())
+                [void]$stringBuilder.Append(" Value=`"DisableNetworkExtension`"/>`r`n")
+            }
 
             #close html
             [void]$stringBuilder.Append("</CustomSettings>")

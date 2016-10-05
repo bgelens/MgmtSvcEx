@@ -447,6 +447,71 @@ function Get-MgmtSvcExVMTemplate {
     }
 }
 
+function Get-MgmtSvcExHardwareProfile {
+    [OutputType([PSCustomObject])]
+    [CmdletBinding(DefaultParameterSetName='List')]
+    param (
+        [Parameter(Mandatory,ParameterSetName='Named')]
+        [ValidateNotNullOrEmpty()]
+        [System.String] $Name
+    )
+    process {
+        try {
+            PreFlight -IncludeConnection
+            $URI = '{0}:{1}/services/systemcenter/SC2012R2/VMM/Microsoft.Management.Odata.svc/HardwareProfiles()' -f $script:APIUrl,$script:Port
+            Write-Verbose -Message "Constructed HardwareProfiles URI: $URI"
+
+            $HWProfiles = Invoke-RestMethod -Uri $URI -Headers $script:Headers -Method Get
+            foreach ($P in $HWProfiles.value) {
+                if ($PSCmdlet.ParameterSetName -eq 'Named' -and $P.Name -ne $Name) {
+                    continue
+                }
+                $P.PSObject.TypeNames.Insert(0,'WAP.AdminHardwareProfile')
+                Write-Output -InputObject $P
+            }
+        } catch {
+            Write-Error -ErrorRecord $_
+        }
+    }
+}
+
+function Get-MgmtSvcExGalleryItem {
+    [OutputType([PSCustomObject])]
+    [CmdletBinding(DefaultParameterSetName='List')]
+    param (
+        [Parameter(Mandatory,ParameterSetName='Named')]
+        [ValidateNotNullOrEmpty()]
+        [System.String] $Name,
+
+        [Parameter(ParameterSetName='List')]
+        [Parameter(ParameterSetName='Named')]
+        [System.String] $Publisher
+    )
+    process {
+        try {
+            PreFlight -IncludeConnection
+            $URI = '{0}:{1}/services/systemcenter/SC2012R2/Admin/GalleryAdminService.svc/GalleryPackages()' -f $script:APIUrl,$script:Port
+            Write-Verbose -Message "Constructed GalleryItem URI: $URI"
+
+            $GalleryItems = Invoke-RestMethod -Uri $URI -Headers $script:Headers -Method Get
+            foreach ($G in $GalleryItems.value) {
+                if ($PSCmdlet.ParameterSetName -eq 'Named' -and $G.Name -ne $Name) {
+                    continue
+                }
+                if ($PSBoundParameters.Keys.Contains('Publisher')) {
+                    if ($G.Publisher -ne $Publisher) {
+                        continue
+                    }
+                }
+                $G.PSObject.TypeNames.Insert(0,'WAP.AdminGalleryItem')
+                Write-Output -InputObject $G
+            }
+        } catch {
+            Write-Error -ErrorRecord $_
+        }
+    }
+}
+
 function New-MgmtSvcExQuotaSettingSCActions {
     [CmdletBinding()]
     param (
@@ -600,7 +665,21 @@ function New-MgmtSvcExQuotaSettingSCClouds {
 function New-MgmtSvcExQuotaSettingSCVmResources {
     [CmdletBinding()]
     param (
+        [Parameter()]
+        [System.Management.Automation.PSTypeName('WAP.AdminVMTemplate')]
+        [PSCustomObject[]] $VMTemplate,
 
+        [Parameter()]
+        [System.Management.Automation.PSTypeName('WAP.AdminHardwareProfile')]
+        [PSCustomObject[]] $HardwareProfile,
+
+        [Parameter()]
+        [System.Management.Automation.PSTypeName('WAP.AdminGalleryItem')]
+        [PSCustomObject[]] $GalleryItem,
+
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [System.Management.Automation.PSTypeName('WAP.AdminCloud')]
+        [PSCustomObject] $Cloud
     )
     process {
         #validate input
@@ -608,6 +687,28 @@ function New-MgmtSvcExQuotaSettingSCVmResources {
             $stringBuilder = New-Object -TypeName System.Text.StringBuilder
             #open html
             [void]$stringBuilder.Append("<Resources>`r`n")
+
+            #add VM Templates
+            foreach ($V in $VMTemplate) {
+                [void]$stringBuilder.Append("    <VmTemplate Id=`"{0}`"" -f $V.ID)
+                [void]$stringBuilder.Append(" StampId=`"{0}`" />`r`n" -f $Cloud.StampId)
+            }
+
+            #add hardware profiles
+            foreach ($H in $HardwareProfile) {
+                [void]$stringBuilder.Append("    <HardwareProfile Id=`"{0}`"" -f $H.ID)
+                [void]$stringBuilder.Append(" StampId=`"{0}`" />`r`n" -f $Cloud.StampId)
+            }
+
+            #add GalleryItems
+            foreach ($G in $GalleryItem) {
+                [void]$stringBuilder.Append("    <GalleryItem")
+                [void]$stringBuilder.Append(" Name=`"{0}`"" -f $G.Name)
+                [void]$stringBuilder.Append(" Version=`"{0}`"" -f $G.Version)
+                [void]$stringBuilder.Append(" Publisher=`"{0}`"" -f $G.Publisher)
+                [void]$stringBuilder.Append(" StampId=`"{0}`"" -f $Cloud.StampId)
+                [void]$stringBuilder.Append(" />`r`n")
+            }
 
             #close html
             [void]$stringBuilder.Append("</Resources>")
@@ -649,7 +750,16 @@ function New-MgmtSvcExQuotaSettingSCNetworks {
 function New-MgmtSvcExQuotaSettingSCCustomSettings {
     [CmdletBinding()]
     param (
-        [Switch] $DisableNetworkExtension
+        [Switch] $DisableNetworkExtension,
+        
+        [Parameter()]
+        [ValidateSet('TemplateDefined','TenantDefined','TenantDefinedPlus3Digits')]
+        [System.String] $VMComputerNameSetting = 'TenantDefinedPlus3Digits',
+
+        [Switch] $DREnabled,
+
+        [Parameter()]
+        [System.String] $Name
     )
     process {
         #validate input
@@ -658,9 +768,29 @@ function New-MgmtSvcExQuotaSettingSCCustomSettings {
             #open html
             [void]$stringBuilder.Append("<CustomSettings>`r`n")
 
-            if ($DisableNetworkExtension) {
+            if ($DisableNetworkExtension -or ($VMComputerNameSetting -ne 'TenantDefinedPlus3Digits') -or $DREnabled -or $Name) {
                 [void]$stringBuilder.Append("    <CustomSetting Key=`"{0}`"" -f [system.guid]::NewGuid().ToString())
-                [void]$stringBuilder.Append(" Value=`"DisableNetworkExtension`"/>`r`n")
+                [void]$stringBuilder.Append(" Value=`"")
+
+                if ($DisableNetworkExtension) {
+                    [void]$stringBuilder.Append("DisableNetworkExtension,")
+                }
+
+                if ($VMComputerNameSetting -eq 'TemplateDefined') {
+                    [void]$stringBuilder.Append("DisableSettingVMComputerName,")
+                } elseif ($VMComputerNameSetting -eq 'TenantDefined') {
+                    [void]$stringBuilder.Append("EnableSettingVMComputerName,")
+                }
+
+                if ($DREnabled) {
+                    [void]$stringBuilder.Append("DREnabled,")
+                }
+
+                if ($Name) {
+                    [void]$stringBuilder.Append("$Name,")
+                }
+                [void]$stringBuilder.Remove($stringBuilder.Length -1, 1)
+                [void]$stringBuilder.Append("`" />`r`n")
             }
 
             #close html

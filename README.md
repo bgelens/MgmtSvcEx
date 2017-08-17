@@ -1,7 +1,11 @@
 # MgmtSvcEx
+
 Windows Azure Pack shippes with the MgmtSvcAdmin module to expose Admin tasks via PowerShell. This module extend the capabilities of MgmtSvcAdmin and make it easier to use.
 
 ## Example use
+
+Create a new plan and add VMM Service and quota's
+
 ```powershell
 $Cred = Get-Credential -UserName admin.ben@azurepack.local -Message apicred
 Get-MgmtSvcExToken `
@@ -65,4 +69,40 @@ $null = Add-MgmtSvcQuotaSetting -Quota $systemcenterquota -Key CustomSettings -V
 
 #apply quota
 $Plan | Update-MgmtSvcPlanQuota -QuotaList $QL
+```
+
+Update an existing plan quota settings to disable checkpoint controls
+
+```powershell
+$Cred = Get-Credential -UserName admin.ben@azurepack.local -Message apicred
+Get-MgmtSvcExToken `
+    -AuthenticationSite https://sts.domain.local `
+    -Type Adfs -AdfsAddress https://sts.domain.local `
+    -User $Cred `
+    -DisableCertificateValidation
+Connect-MgmtSvcExAPI -Url https://wapadminapi.azurepack.local -IgnoreSSL
+
+$plan = Get-MgmtSvcPlan -DisplayName mynewplan
+$plan | Update-MgmtSvcExQuotaSettingSCActions -Checkpoint $false -CheckpointRestoreOnly $false
+```
+
+Add / Remove Co Administrators
+
+```powershell
+$Cred = Get-Credential -UserName admin.ben@azurepack.local -Message apicred
+Get-MgmtSvcExToken `
+    -AuthenticationSite https://sts.domain.local `
+    -Type Adfs -AdfsAddress https://sts.domain.local `
+    -User $Cred `
+    -DisableCertificateValidation
+Connect-MgmtSvcExAPI -Url https://wapadminapi.azurepack.local -IgnoreSSL
+
+$plan = Get-MgmtSvcPlan -DisplayName mynewplan
+$sub = $plan | Get-MgmtSvcSubscription
+
+# Add Co Admin
+$sub | Add-MgmtSvcExCoAdministrator -CoAdministratorName 'new@admin.com'
+
+# Remove Co Admin
+$sub | Remove-MgmtSvcExCoAdministrator -CoAdministratorName 'old@admin.com'
 ```

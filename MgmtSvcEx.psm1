@@ -119,8 +119,6 @@ function ConvertToUIntTest {
         }
     }
 }
-
-
 #endregion internal functions
 
 #region public functions
@@ -801,6 +799,280 @@ function New-MgmtSvcExQuotaSettingSCCustomSettings {
         }
     }
 }
+
+function Get-MgmtSvcExQuotaSettingSCActions {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [Microsoft.WindowsAzure.Server.Management.Plan] $Plan
+    )
+    process {
+        $scServiceQuota = $Plan.ServiceQuotas | Where-Object -FilterScript {
+            $_.ServiceName -eq 'systemcenter'
+        }
+        if ($null -eq $scServiceQuota) {
+            Write-Error -Message "No SystemCenter Quota is configured for plan: $($Plan.DisplayName)" -ErrorAction Stop
+        } else {
+            $StringWriter = New-Object System.IO.StringWriter
+            $XmlWriter = New-Object System.Xml.XmlTextWriter $StringWriter
+            $XmlWriter.Formatting = "indented"
+            $actions = [xml]$scServiceQuota.Settings.Where{$_.Key -eq 'Actions'}.Value
+            $actions.WriteTo($XmlWriter)
+            $XmlWriter.Flush()
+            $StringWriter.Flush()
+            $StringWriter.ToString()
+        }
+    }
+}
+
+function Update-MgmtSvcExQuotaSettingSCActions {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [Microsoft.WindowsAzure.Server.Management.Plan] $Plan,
+
+        [bool] $Checkpoint,
+
+        [bool] $CheckpointRestoreOnly,
+
+        [bool] $SaveVMState,
+
+        [bool] $LibraryStoreAndDeploy,
+
+        [bool] $ConsoleConnect,
+
+        #default = unlimited
+        [System.String] $MaximumNetwork = [System.String]::Empty,
+        
+        #default = unlimited Mb/s
+        [System.String] $MaximumBandwidthIn = [System.String]::Empty,
+        
+        #default = unlimited Mb/s
+        [System.String] $MaximumBandwidthOut = [System.String]::Empty,
+        
+        #[ValidateRange(0,99)]
+        [uint16] $MaximumVPNConnection = 99,
+        
+        #[ValidateRange(0,99)]
+        [uint16] $MaximumNATConnection = 99
+    )
+    process {
+        try {
+            $xmlActions = [xml]($Plan | Get-MgmtSvcExQuotaSettingSCActions)
+            $actionNodes = ($xmlActions | Select-Xml -XPath "//Action").Node.InnerText
+            $networkNode = ($xmlActions | Select-Xml -XPath "//Action" | Where-Object -FilterScript {$_.Node.'#text' -eq 'AuthorVMNetwork'}).Node
+            ConvertToUIntTest MaximumNetwork $MaximumNetwork
+            ConvertToUIntTest MaximumBandwidthIn $MaximumBandwidthIn
+            ConvertToUIntTest MaximumBandwidthOut $MaximumBandwidthOut
+
+            $stringBuilder = New-Object -TypeName System.Text.StringBuilder
+            # open xml
+            [void]$stringBuilder.Append("<Actions>`r`n")
+            [void]$stringBuilder.Append("    <Stamp Id=`"{0}`">`r`n" -f ($xmlActions | Select-Xml -XPath "//Stamp").Node.Id)
+
+            # implicit settings
+            [void]$stringBuilder.Append("        <Action>Author</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>Create</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>CreateFromVHDOrTemplate</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>AllowLocalAdmin</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>Start</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>Stop</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>PauseAndResume</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>Shutdown</Action>`r`n")
+            [void]$stringBuilder.Append("        <Action>Remove</Action>`r`n")
+
+            # optional settings
+            if ($PSBoundParameters.ContainsKey('Checkpoint')) {
+                if ($Checkpoint) {
+                    [void]$stringBuilder.Append("        <Action>Checkpoint</Action>`r`n")
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                } elseif ($PSBoundParameters.ContainsKey('CheckpointRestoreOnly') -and $CheckpointRestoreOnly) {
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                } elseif ($PSBoundParameters.ContainsKey('CheckpointRestoreOnly') -and -not $CheckpointRestoreOnly) {
+                    
+                } elseif ($actionNodes -contains 'CheckpointRestoreOnly') {
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                }
+            } elseif ($PSBoundParameters.ContainsKey('CheckpointRestoreOnly')) {
+                if ($CheckpointRestoreOnly) {
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                }
+            } else {
+                if ($actionNodes -contains 'Checkpoint') {
+                    [void]$stringBuilder.Append("        <Action>Checkpoint</Action>`r`n")
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                } elseif ($actionNodes -contains 'CheckpointRestoreOnly') {
+                    [void]$stringBuilder.Append("        <Action>CheckpointRestoreOnly</Action>`r`n")
+                }
+            }
+
+            if ($PSBoundParameters.ContainsKey('SaveVMState')) {
+                if ($SaveVMState) {
+                    [void]$stringBuilder.Append("        <Action>Save</Action>`r`n")
+                }
+            } elseif ($actionNodes -contains 'Save') {
+                [void]$stringBuilder.Append("        <Action>Save</Action>`r`n")
+            }
+
+            if ($PSBoundParameters.ContainsKey('LibraryStoreAndDeploy')) {
+                if ($LibraryStoreAndDeploy) {
+                    [void]$stringBuilder.Append("        <Action>Store</Action>`r`n")
+                }
+            } elseif ($actionNodes -contains 'Store') {
+                [void]$stringBuilder.Append("        <Action>Store</Action>`r`n")
+            }
+
+            if ($PSBoundParameters.ContainsKey('ConsoleConnect')) {
+                if ($ConsoleConnect) {
+                    [void]$stringBuilder.Append("        <Action>RemoteConnect</Action>`r`n")
+                }
+            } elseif ($actionNodes -contains 'RemoteConnect') {
+                [void]$stringBuilder.Append("        <Action>RemoteConnect</Action>`r`n")
+            }
+
+            # network settings
+            [void]$stringBuilder.Append("        <Action")
+            if ($networkNode.MaximumNetwork -ne $MaximumNetwork) {
+                [void]$stringBuilder.Append(" MaximumNetwork=`"{0}`"" -f $MaximumNetwork)
+                [void]$stringBuilder.Append(" MaximumMemberNetwork=`"{0}`"" -f $MaximumNetwork)
+            } else {
+                [void]$stringBuilder.Append(" MaximumNetwork=`"{0}`"" -f $networkNode.MaximumNetwork)
+                [void]$stringBuilder.Append(" MaximumMemberNetwork=`"{0}`"" -f $networkNode.MaximumMemberNetwork)
+            }
+            
+            if ($networkNode.MaximumBandwidthIn -ne $MaximumBandwidthIn) {
+                [void]$stringBuilder.Append(" MaximumBandwidthIn=`"{0}`"" -f $MaximumBandwidthIn)
+            } else {
+                [void]$stringBuilder.Append(" MaximumBandwidthIn=`"{0}`"" -f $networkNode.MaximumBandwidthIn)
+            }
+
+            if ($networkNode.MaximumBandwidthOut -ne $MaximumBandwidthOut) {
+                [void]$stringBuilder.Append(" MaximumBandwidthOut=`"{0}`"" -f $MaximumBandwidthOut)
+            } else {
+                [void]$stringBuilder.Append(" MaximumBandwidthOut=`"{0}`"" -f $networkNode.MaximumBandwidthOut)
+            }
+
+            if ($networkNode.MaximumVPNConnection -ne $MaximumVPNConnection) {
+                [void]$stringBuilder.Append(" MaximumVPNConnection=`"{0}`"" -f $MaximumVPNConnection)
+                [void]$stringBuilder.Append(" MaximumMemberVPNConnection=`"{0}`"" -f $MaximumVPNConnection)
+            } else {
+                [void]$stringBuilder.Append(" MaximumVPNConnection=`"{0}`"" -f $networkNode.MaximumVPNConnection)
+                [void]$stringBuilder.Append(" MaximumMemberVPNConnection=`"{0}`"" -f $networkNode.MaximumMemberVPNConnection)
+            }
+
+            if ($networkNode.MaximumNATConnection -ne $MaximumNATConnection) {
+                [void]$stringBuilder.Append(" MaximumNATConnection=`"{0}`"" -f $MaximumNATConnection)
+                [void]$stringBuilder.Append(" MaximumMemberNATConnection=`"{0}`"" -f $MaximumNATConnection)
+            } else {
+                [void]$stringBuilder.Append(" MaximumNATConnection=`"{0}`"" -f $networkNode.MaximumNATConnection)
+                [void]$stringBuilder.Append(" MaximumMemberNATConnection=`"{0}`"" -f $networkNode.MaximumMemberNATConnection)
+            }
+
+            [void]$stringBuilder.Append(">AuthorVMNetwork</Action>`r`n")
+
+            # close up xml
+            [void]$stringBuilder.Append("    </Stamp>`r`n")
+            [void]$stringBuilder.Append("</Actions>")
+            $newActions = $stringBuilder.ToString()
+
+            # update plan settings
+            $quotaList = New-MgmtSvcQuotaList
+
+            $scServiceQuota = $Plan.ServiceQuotas | Where-Object -FilterScript {
+                $_.ServiceName -eq 'systemcenter'
+            }
+
+            $quota = Add-MgmtSvcListQuota -QuotaList $quotaList -ServiceName systemcenter -ServiceInstanceId $scServiceQuota.ServiceInstanceId
+
+            $null = Add-MgmtSvcQuotaSetting -Quota $quota -Key Actions -Value $newActions
+
+            $scServiceQuota.Settings | ForEach-Object -Process {
+                if ($_.key -eq 'Actions') {
+                    return
+                }
+                $null = Add-MgmtSvcQuotaSetting -Quota $quota -Key $_.Key -Value $_.Value
+            }
+
+            $updatePlanQuotaArgs = @{
+                PlanId = $Plan.PlanId
+                AdminUri = "$script:ApiUrl`:$script:Port"
+                Token = $script:Token
+                QuotaList = $quotaList
+            }
+
+            if ($script:IgnoreSSL) {
+                [void]$updatePlanQuotaArgs.Add('DisableCertificateValidation',$true)
+            }
+
+            Update-MgmtSvcPlanQuota @updatePlanQuotaArgs
+        } catch {
+            Write-Error -ErrorRecord $_ -ErrorAction Stop
+        }
+    }
+}
+
+function Add-MgmtSvcExCoAdministrator {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [Microsoft.WindowsAzure.Server.AdminManagement.AdminSubscription] $Subscription,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $CoAdministratorName
+    )
+    process {
+        $newCoAdmins = @()
+        foreach ($c in $Subscription.CoAdminNames) {
+            $newCoAdmins += $c
+        }
+        if ($CoAdministratorName -notin $newCoAdmins) {
+            $newCoAdmins += $CoAdministratorName
+
+            $updateArgs = @{
+                SubscriptionId = $Subscription.SubscriptionId
+                AdminUri = "$script:ApiUrl`:$script:Port"
+                Token = $script:Token
+                CoAdministratorName = $newCoAdmins
+            }
+
+            Update-MgmtSvcCoAdministrator @updateArgs
+        } else {
+            Write-Warning -Message "$CoAdministratorName is already a Co Administrator. No Action taken."
+        }
+    }
+}
+
+function Remove-MgmtSvcExCoAdministrator {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [Microsoft.WindowsAzure.Server.AdminManagement.AdminSubscription] $Subscription,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $CoAdministratorName
+    )
+    process {
+        $newCoAdmins = @()
+        foreach ($c in $Subscription.CoAdminNames) {
+            if ($CoAdministratorName -eq $c) {
+                continue
+            }
+            $newCoAdmins += $c
+
+            $updateArgs = @{
+                SubscriptionId = $Subscription.SubscriptionId
+                AdminUri = "$script:ApiUrl`:$script:Port"
+                Token = $script:Token
+                CoAdministratorName = $newCoAdmins
+            }
+
+            Update-MgmtSvcCoAdministrator @updateArgs
+        }
+    }
+}
+
 #endregion public functions
 
 #region module exports

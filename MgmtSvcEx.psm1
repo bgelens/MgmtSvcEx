@@ -1060,16 +1060,16 @@ function Remove-MgmtSvcExCoAdministrator {
                 continue
             }
             $newCoAdmins += $c
-
-            $updateArgs = @{
-                SubscriptionId = $Subscription.SubscriptionId
-                AdminUri = "$script:ApiUrl`:$script:Port"
-                Token = $script:Token
-                CoAdministratorName = $newCoAdmins
-            }
-
-            Update-MgmtSvcCoAdministrator @updateArgs
         }
+
+        $updateArgs = @{
+            SubscriptionId = $Subscription.SubscriptionId
+            AdminUri = "$script:ApiUrl`:$script:Port"
+            Token = $script:Token
+            CoAdministratorName = $newCoAdmins
+        }
+
+        Update-MgmtSvcCoAdministrator @updateArgs
     }
 }
 

@@ -12,7 +12,7 @@
 RootModule = 'MgmtSvcEx'
 
 # Version number of this module.
-ModuleVersion = '0.0.0.5'
+ModuleVersion = '0.0.0.6'
 
 # ID used to uniquely identify this module
 GUID = '90d97f3d-c55f-4a76-b1ab-e2afcb0ffbdf'
